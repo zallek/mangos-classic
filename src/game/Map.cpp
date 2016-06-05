@@ -1290,6 +1290,7 @@ bool DungeonMap::Add(Player* player)
     // TODO: Not sure about checking player level: already done in HandleAreaTriggerOpcode
     // GMs still can teleport player in instance.
     // Is it needed?
+    sLog.outError("DungeonMap::Add");
 
     if (!CanEnter(player))
         return false;
@@ -1383,6 +1384,22 @@ bool DungeonMap::Add(Player* player)
         }
     }
 
+    // Instance Chronometer
+    InstanceTemplate const* iTemplate = ObjectMgr::GetInstanceTemplate(GetId());
+    if (iTemplate->endBoss) // If endBoss defined in DB
+    {
+        InstanceRecord* record = GetInstanceRecord();
+        // Create instance record if group eligible and not exist
+        if (!record)
+        {
+            CreateInstanceRecord();
+            // @TODO
+            // Send Message "Speed Run: chrono started. You have *** minutes to kill ***."
+            // If in raid
+            //   Send Message "Info: At least 2/3 of players in raid must be within the same guild to be validate the run"
+        }
+    }
+
     // for normal instances cancel the reset schedule when the
     // first player enters (no players yet)
     SetResetSchedule(false);
@@ -1397,6 +1414,127 @@ bool DungeonMap::Add(Player* player)
     Map::Add(player);
 
     return true;
+}
+
+InstanceRecord* DungeonMap::GetInstanceRecord()
+{
+    if (dm_instanceRecord) {
+        return dm_instanceRecord;
+    }
+
+    // @TODO: else Get instance from DB
+}
+
+InstanceRecord* DungeonMap::CreateInstanceRecord()
+{
+    dm_instanceRecord = new InstanceRecord;
+    dm_instanceRecord->map = Map::i_id;
+    dm_instanceRecord->instance = Map::i_InstanceId;
+    dm_instanceRecord->startTime = time(0);
+
+    CharacterDatabase.PExecute(
+        "INSERT INTO instance_record (instance, map, startTime) "
+        "VALUES('%u','%u','%u')",
+        dm_instanceRecord->instance, dm_instanceRecord->map, dm_instanceRecord->startTime
+    );
+    CharacterDatabase.CommitTransaction();
+
+    return dm_instanceRecord;
+}
+
+void DungeonMap::OnPlayerKillCreature(Player* player, Creature* creature)
+{
+    uint32 creatureId = creature->GetEntry();
+    InstanceTemplate const* iTemplate = ObjectMgr::GetInstanceTemplate(GetId());
+
+    if (iTemplate->endBoss == creatureId)
+    {
+        sLog.outError("Boss Killed youhou");
+        dm_instanceRecord->endTime = time(0);
+        dm_instanceRecord->time = dm_instanceRecord->endTime - dm_instanceRecord->startTime;
+
+        Group* pGroup = player->GetGroup();
+        if (pGroup)
+        {
+            if (pGroup->isRaidGroup())
+            {
+                dm_instanceRecord->type = IR_RAID;
+                // Save leader
+                dm_instanceRecord->members[0] = pGroup->GetLeaderGuid();
+            }
+            else
+            {
+                dm_instanceRecord->type = IR_GROUP;
+                
+                // Fill members list
+                Group::MemberSlotList const& memberList = pGroup->GetMemberSlots();
+                Group::MemberSlotList::const_iterator memberItr;
+                int i = 0;
+                for (memberItr = memberList.begin(); memberItr != memberList.end(); ++memberItr)
+                {
+                    dm_instanceRecord->members[i] = memberItr->guid;
+                    i++;
+                }
+            }
+
+            // Set dm_instanceRecord->guild
+            // Considered as an guild instance if more than 2/3 of the same guild
+            uint32 leaderGuild = sObjectMgr.GetPlayer(pGroup->GetLeaderGuid(), false)->GetGuildId();
+            int memberSameGuild = 1;
+            Group::MemberSlotList const& memberList = pGroup->GetMemberSlots();
+            Group::MemberSlotList::const_iterator memberItr;
+            for (memberItr = memberList.begin(); memberItr != memberList.end(); ++memberItr)
+            {
+                Player* member = sObjectMgr.GetPlayer(memberItr->guid, false);
+                if (member->GetGuildId() == leaderGuild) memberSameGuild++;
+            }
+            if (memberSameGuild / pGroup->GetMembersCount() > 0.66)
+            {
+                dm_instanceRecord->guild = memberSameGuild;
+            }
+        }
+        else // Solo run
+        {
+            dm_instanceRecord->type = IR_SOLO;
+            dm_instanceRecord->members[0] = player->GetGUID();
+        }
+
+        // Not valid if raid and not a guild instance
+        if (Map::IsRaid() && !dm_instanceRecord->guild)
+        {
+            dm_instanceRecord->valid = false;
+            // @TODO: Send Message (not enought guild mates)
+        }
+        else
+        {
+            dm_instanceRecord->valid = true;
+        }
+
+        CharacterDatabase.PExecute(
+            "UPDATE instance_record SET type = '%u', valid = '%u', endTime = '%u', time = '%u', guild = '%u', member0 = '%u', member1 = '%u', member2 = '%u', member3 = '%u', member4 = '%u' WHERE instance = '%u'",
+            dm_instanceRecord->type,
+            dm_instanceRecord->valid ? 1 : 0,
+            dm_instanceRecord->endTime,
+            dm_instanceRecord->time,
+            dm_instanceRecord->guild,
+            dm_instanceRecord->members[0],
+            dm_instanceRecord->members[1],
+            dm_instanceRecord->members[2],
+            dm_instanceRecord->members[3],
+            dm_instanceRecord->members[4],
+            dm_instanceRecord->instance
+        );
+        CharacterDatabase.CommitTransaction();
+
+        if (dm_instanceRecord->valid)
+        {
+            // @TODO
+            // If beat record
+            //   Send Message congratulation
+            // Else
+            //   Send Message finished
+        }
+    }
 }
 
 void DungeonMap::Update(const uint32& t_diff)

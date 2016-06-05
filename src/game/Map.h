@@ -73,12 +73,33 @@ struct InstanceTemplate
     float ghostEntranceX;
     float ghostEntranceY;
     uint32 script_id;
+    uint32 endBoss;
 };
 
 struct WorldTemplate
 {
     uint32 map;                                             // non-instance map
     uint32 script_id;
+};
+
+enum InstanceRecordType {
+    IR_NOT_FINISHED = 0,
+    IR_SOLO = 1,
+    IR_GROUP = 2,
+    IR_RAID = 3,
+};
+
+struct InstanceRecord
+{
+    uint32 instance;
+    uint32 map;
+    InstanceRecordType type;
+    bool valid;
+    uint32 startTime;
+    uint32 endTime;
+    uint32 time;
+    uint32 guild;
+    uint32 members [5];
 };
 
 #if defined( __GNUC__ )
@@ -406,6 +427,9 @@ class MANGOS_DLL_SPEC DungeonMap : public Map
         void UnloadAll(bool pForce) override;
         void SendResetWarnings(uint32 timeLeft) const;
         void SetResetSchedule(bool on);
+        InstanceRecord* GetInstanceRecord();
+        InstanceRecord* CreateInstanceRecord();
+        void OnPlayerKillCreature(Player* player, Creature* creature);
         uint32 GetMaxPlayers() const;
 
         // can't be nullptr for loaded map
@@ -415,6 +439,7 @@ class MANGOS_DLL_SPEC DungeonMap : public Map
     private:
         bool m_resetAfterUnload;
         bool m_unloadWhenEmpty;
+        InstanceRecord* dm_instanceRecord;
 };
 
 class MANGOS_DLL_SPEC BattleGroundMap : public Map
